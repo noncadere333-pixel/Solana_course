@@ -267,3 +267,149 @@ fn week8_initialize_vault_and_create_user_cards() {
     assert_eq!(parsed_card.deposited_amount, 0);
     assert_eq!(parsed_card.shares_minted, 0);
 }
+
+#[test]
+fn week9_deposit_share_calculation_and_zero_rejections() {
+    let (mut svm, admin, deposit_mint, _) = setup_svm();
+    let (vault, token_vault, share_mint) = init_vault(&mut svm, &admin, &deposit_mint);
+
+    let user1 = Keypair::new();
+    let user2 = Keypair::new();
+    svm.airdrop(&user1.pubkey(), 5 * SOL).unwrap();
+    svm.airdrop(&user2.pubkey(), 5 * SOL).unwrap();
+    let u1_pk = Pubkey::new_from_array(user1.pubkey().to_bytes());
+    let u2_pk = Pubkey::new_from_array(user2.pubkey().to_bytes());
+
+    let card1 = create_card(&mut svm, &user1, &vault);
+    let card2 = create_card(&mut svm, &user2, &vault);
+
+    let u1_token = ata(&u1_pk, &deposit_mint);
+    let u2_token = ata(&u2_pk, &deposit_mint);
+    let u1_share = ata(&u1_pk, &share_mint);
+    let u2_share = ata(&u2_pk, &share_mint);
+
+    set_token_account(&mut svm, &u1_token, &deposit_mint, &u1_pk, 2_000 * ONE_TOKEN);
+    set_token_account(&mut svm, &u2_token, &deposit_mint, &u2_pk, 500 * ONE_TOKEN);
+
+    // Отказ при попытке внести 0 токенов
+    let zero_ix = Instruction {
+        program_id: liquidity_vault::id(),
+        accounts: accounts::Deposit {
+            user: u1_pk,
+            vault,
+            user_card: card1,
+            deposit_mint,
+            share_mint,
+            user_token_account: u1_token,
+            token_vault,
+            user_share_account: u1_share,
+            token_program: token_program(),
+            associated_token_program: ata_program(),
+            system_program: system_program::ID,
+            strategy: pda(&[STRATEGY_SEED, vault.as_ref()]),
+            secondary_vault: pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]),
+            pool_state: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: instruction::Deposit { amount: 0 }.data(),
+    };
+    let err = send_ix(&mut svm, &[&user1], zero_ix).unwrap_err();
+    assert!(err.contains(&custom_err(VaultError::ZeroAmount)), "got {}", err);
+
+    // Первый вкладчик вносит 1000 токенов -> получает ровно 1000 share-токенов (1:1)
+    let dep1_ix = Instruction {
+        program_id: liquidity_vault::id(),
+        accounts: accounts::Deposit {
+            user: u1_pk,
+            vault,
+            user_card: card1,
+            deposit_mint,
+            share_mint,
+            user_token_account: u1_token,
+            token_vault,
+            user_share_account: u1_share,
+            token_program: token_program(),
+            associated_token_program: ata_program(),
+            system_program: system_program::ID,
+            strategy: pda(&[STRATEGY_SEED, vault.as_ref()]),
+            secondary_vault: pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]),
+            pool_state: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: instruction::Deposit {
+            amount: 1_000 * ONE_TOKEN,
+        }
+        .data(),
+    };
+    send_ix(&mut svm, &[&user1], dep1_ix).unwrap();
+    assert_eq!(read_token_amount(&svm, &u1_share), 1_000 * ONE_TOKEN);
+    assert_eq!(read_token_amount(&svm, &token_vault), 1_000 * ONE_TOKEN);
+
+    // Vault зарабатывает +100 токенов дохода: в хранилище становится 1100 токенов при 1000 долях
+    set_token_account(
+        &mut svm,
+        &token_vault,
+        &deposit_mint,
+        &vault,
+        1_100 * ONE_TOKEN,
+    );
+
+    // Второй вкладчик вносит 110 токенов -> получает 110 * 1000 / 1100 = 100 share-токенов
+    let dep2_ix = Instruction {
+        program_id: liquidity_vault::id(),
+        accounts: accounts::Deposit {
+            user: u2_pk,
+            vault,
+            user_card: card2,
+            deposit_mint,
+            share_mint,
+            user_token_account: u2_token,
+            token_vault,
+            user_share_account: u2_share,
+            token_program: token_program(),
+            associated_token_program: ata_program(),
+            system_program: system_program::ID,
+            strategy: pda(&[STRATEGY_SEED, vault.as_ref()]),
+            secondary_vault: pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]),
+            pool_state: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: instruction::Deposit {
+            amount: 110 * ONE_TOKEN,
+        }
+        .data(),
+    };
+    send_ix(&mut svm, &[&user2], dep2_ix).unwrap();
+    assert_eq!(read_token_amount(&svm, &u2_share), 100 * ONE_TOKEN);
+    assert_eq!(read_token_amount(&svm, &token_vault), 1_210 * ONE_TOKEN);
+    assert_eq!(read_mint_supply(&svm, &share_mint), 1_100 * ONE_TOKEN);
+
+    // Пылевой депозит (1 микротокен при курсе 1.1) округляется в 0 долей и отклоняется ZeroShares
+    let dust_ix = Instruction {
+        program_id: liquidity_vault::id(),
+        accounts: accounts::Deposit {
+            user: u2_pk,
+            vault,
+            user_card: card2,
+            deposit_mint,
+            share_mint,
+            user_token_account: u2_token,
+            token_vault,
+            user_share_account: u2_share,
+            token_program: token_program(),
+            associated_token_program: ata_program(),
+            system_program: system_program::ID,
+            strategy: pda(&[STRATEGY_SEED, vault.as_ref()]),
+            secondary_vault: pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]),
+            pool_state: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: instruction::Deposit { amount: 1 }.data(),
+    };
+    let dust_err = send_ix(&mut svm, &[&user2], dust_ix).unwrap_err();
+    assert!(
+        dust_err.contains(&custom_err(VaultError::ZeroShares)),
+        "got {}",
+        dust_err
+    );
+}

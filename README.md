@@ -188,3 +188,23 @@ flowchart TD
 
 ---
 
+## 5. Неделя 9 — Депозит и математика долей (Share Tokens)
+
+### Формула расчёта долей
+В модуле `programs/liquidity-vault/src/math.rs` реализована функция `calculate_shares_to_mint`:
+Расчёт ведётся в `u128` с целочисленным делением вниз (в пользу хранилища) и виртуальной долей `+1`
+в числителе и знаменателе (защита от атаки первого вкладчика через донат в `token_vault`):
+  $$\text{shares} = \left\lfloor \frac{\text{amount} \times (\text{total\_shares} + 1)}{\text{NAV} + 1} \right\rfloor$$
+- В пустом хранилище ($\text{total\_shares} = 0$, $\text{NAV} = 0$) доли выпускаются `1:1`.
+- $\text{NAV}$ — полная стоимость хранилища в `deposit_mint` (`nav.rs`): остаток `token_vault` плюс остаток
+  `secondary_vault`, пересчитанный по спотовой цене пула Raydium. Пока у стратегии открыта CLMM-позиция,
+  `deposit` и `withdraw` отклоняются ошибкой `PositionActive`.
+- Если из-за малого размера вклада $\text{shares} = 0$, возвращается ошибка `VaultError::ZeroShares`.
+
+### Транзакция Недели 9 в Solana Devnet
+- **Депозит `1000.0` токенов (`deposit`)**: [`MByYftZVVVcxMiacMW5vjQMgLzhHT5CPMau1hULKzSnoFvmBYpG7hUTEd5bh7qb5QcFrpvqhWbr4nTYuJGApQKu`](https://explorer.solana.com/tx/MByYftZVVVcxMiacMW5vjQMgLzhHT5CPMau1hULKzSnoFvmBYpG7hUTEd5bh7qb5QcFrpvqhWbr4nTYuJGApQKu?cluster=devnet)
+  - Переведено в `token_vault`: `1000.0` (`1_000_000_000` raw)
+  - Выпущено `share`-токенов через CPI `mint_to` с подписью `VaultState` PDA: `1000.0` (`1_000_000_000` raw)
+
+---
+

@@ -80,7 +80,10 @@ COMMANDS:
   Week 8 (Vault Skeleton & PDAs):
     init                        Initialize VaultState, token_vault, and share_mint PDAs
     card                        Create personal UserCard PDA for the wallet
-    show                        Show VaultState, UserCard, wallet balances"
+    show                        Show VaultState, UserCard, wallet balances
+
+  Week 9 (Deposit & Share Tokens):
+    deposit --amount <UI_AMT>   Deposit tokens into vault and mint proportional share tokens"
     );
 }
 
@@ -140,6 +143,12 @@ fn main() -> Result<()> {
         "show" => {
             let mint = resolve_deposit_mint()?;
             vault::cmd_show_vault(&rpc, &wallet, &mint)?;
+        }
+        "deposit" => {
+            let mint = resolve_deposit_mint()?;
+            let amount = parse_flag_value(&args, "--amount")
+                .ok_or_else(|| anyhow!("Missing --amount <UI_AMOUNT> for deposit"))?;
+            vault::cmd_deposit(&rpc, &wallet, &mint, &amount)?;
         }
         cmd => bail!("Unknown command: {}. Run with --help for usage.", cmd),
     }

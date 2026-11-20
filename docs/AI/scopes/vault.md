@@ -19,6 +19,12 @@
    cargo test -p liquidity-vault --lib     # модульные тесты формул
    cargo test -p liquidity-vault --test vault
    ```
+3. Деплой в локальный валидатор (`solana-test-validator`) или в `devnet`:
+   ```bash
+   solana program deploy target/deploy/liquidity_vault.so \
+     --program-id target/deploy/liquidity_vault-keypair.json \
+     --url devnet
+   ```
 
 ## 3. Архитектура PDA и владение средствами
 
