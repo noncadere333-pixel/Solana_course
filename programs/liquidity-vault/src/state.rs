@@ -36,7 +36,7 @@ pub struct UserCard {
     pub bump: u8,
 }
 
-/// Стратегия привязки к пулу Raydium CLMM (Неделя 12).
+/// Стратегия концентрированной ликвидности Raydium CLMM (Недели 12–13).
 /// PDA: `["strategy", vault]`.
 #[account]
 #[derive(InitSpace)]
@@ -57,3 +57,4 @@ pub struct Strategy {
     pub bump: u8,
     pub secondary_vault_bump: u8,
 }
+

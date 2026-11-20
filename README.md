@@ -262,3 +262,43 @@ flowchart TD
 
 ---
 
+## 9. Неделя 13 — Позиция Vault в Raydium CLMM, сбор комиссий, Impermanent Loss и ребалансировка
+
+### Полный жизненный цикл CLMM-позиции хранилища
+1. **Открытие позиции (`open_position`)**:
+   - Vault размещает средства из `token_vault` и `secondary_vault` в диапазон тиков `[-360 .. 240]` вокруг текущей цены пула (`tick_current = -4`).
+   - Владельцем Token-2022 NFT позиции (`position_nft_owner`) становится `VaultState` PDA.
+2. **Генерация комиссий и их сбор (`collect_fees`)**:
+   - Внешний трейдер совершает свопы в пуле (`5000.0 token_0 → token_1` и обратно `5000.0 token_1 → token_0`), генерируя комиссионный доход для всех активных позиций в диапазоне.
+   - Вызов `collect_fees` (CPI `decrease_liquidity_v2(liquidity = 0)` с подписью `VaultState` PDA) переводит накопленные комиссии (`+0.069826` Deposit Mint и `+0.069826` Secondary Mint) непосредственно в хранилища `token_vault` и `secondary_vault`.
+3. **Закрытие позиции (`close_position`) и анализ Impermanent Loss**:
+   - При первом открытии позиции в диапазон `[-360 .. 240]` было внесено `134.400981` токена A и `196.000000` токена B (суммарно `330.400981` у.е.). После серии свопов и закрытия позиции в хранилище вернулось `134.290214` токена A и `196.110727` токена B + собранные комиссии по `0.069826` каждого токена (суммарно `330.540593` у.е.), то есть комиссионный доход полностью перекрыл микроскопический Impermanent Loss.
+   - Во втором цикле внешний своп на `8000.0 token_0` сдвинул тик с `-4` до `-99` (цена упала с `0.999659` до `0.990155`). При закрытии позиции `[-360 .. 240]` доля дешевеющего `token_0` выросла с `100.660794` до `140.589714`, а доля дорожающего `token_1` снизилась со `147.0` до `107.358354` — наглядная иллюстрация **Impermanent Loss** при одностороннем движении цены.
+4. **Ребалансировка (`vault-rebalance`)**:
+   - Команда `vault-rebalance` закрыла старую позицию `[-360 .. 240]` и открыла новую позицию в смещённом диапазоне **`[-420 .. 180]`**, отцентрированном вокруг нового тика `-99`.
+
+### Транзакции Недели 13 в Solana Devnet
+- **Открытие первой CLMM-позиции Vault (`[-360 .. 240]`, `L = 11100016214`)**: [`3nNMfSwm2SKrxdG6jwekJRRbEx9NgQvJEGJekqysme1nAqTatNjrDu8dd4xnHx5EEtNSrU5qWG6WSy39MqQuNQuM`](https://explorer.solana.com/tx/3nNMfSwm2SKrxdG6jwekJRRbEx9NgQvJEGJekqysme1nAqTatNjrDu8dd4xnHx5EEtNSrU5qWG6WSy39MqQuNQuM?cluster=devnet)
+- **Внешний своп трейдера #1 (`5000.0 token_0 → token_1`, тик `-4 → -64`)**: [`43s2qygth1at5UMmgJmqe8fKvNUW9rr2NzDyxAh7yihoznwBmvKjBYU4RhNvbLjQB5rzq7WkwaMZNHQ3B9oCt3rw`](https://explorer.solana.com/tx/43s2qygth1at5UMmgJmqe8fKvNUW9rr2NzDyxAh7yihoznwBmvKjBYU4RhNvbLjQB5rzq7WkwaMZNHQ3B9oCt3rw?cluster=devnet)
+- **Внешний своп трейдера #2 (`5000.0 token_1 → token_0`, тик `-64 → -4`)**: [`3fEoZyLt9oLznRd1ygtvqfaiE6s4siuNumCpnpVq3oJkh9cqjGE4szEeLHChcVt5stUxQqCgKA8JSmH2c6NgfFkR`](https://explorer.solana.com/tx/3fEoZyLt9oLznRd1ygtvqfaiE6s4siuNumCpnpVq3oJkh9cqjGE4szEeLHChcVt5stUxQqCgKA8JSmH2c6NgfFkR?cluster=devnet)
+- **Сбор комиссий хранилищем (`collect_fees` CPI)**: [`3LQZo8zCz6Kx2vULcjo8pGjmAqgmbzJfbecgSKTQvsuzDEPzq8ZJ4BumZSYGfh26CYPGJTdbxDmBWZirTkdRXsGc`](https://explorer.solana.com/tx/3LQZo8zCz6Kx2vULcjo8pGjmAqgmbzJfbecgSKTQvsuzDEPzq8ZJ4BumZSYGfh26CYPGJTdbxDmBWZirTkdRXsGc?cluster=devnet)
+- **Закрытие первой позиции хранилищем (`close_position` CPI)**: [`4aNp9PqZ9fXi6uvh2qqjDuk28XogMhafQouZ49cUKcTzy7aKos4orBUmi3qHmrR4HQYxycgfUXop1iaoTGYe2fqq`](https://explorer.solana.com/tx/4aNp9PqZ9fXi6uvh2qqjDuk28XogMhafQouZ49cUKcTzy7aKos4orBUmi3qHmrR4HQYxycgfUXop1iaoTGYe2fqq?cluster=devnet)
+- **Открытие позиции перед ребалансировкой (`[-360 .. 240]`)**: [`kzd9BnRsvDhnqjTn29ZpeNHUXfLFeekSngBRjD4NXUr5MpygmtAitZ2BDQrbSvCyqhNW9vhAuSGvAZcunCv4cUV`](https://explorer.solana.com/tx/kzd9BnRsvDhnqjTn29ZpeNHUXfLFeekSngBRjD4NXUr5MpygmtAitZ2BDQrbSvCyqhNW9vhAuSGvAZcunCv4cUV?cluster=devnet)
+- **Своп трейдера для сдвига цены (`8000.0 token_0 → token_1`, тик `-4 → -99`)**: [`4kTYGKXaWpK9ESi9tHu4rEWRegwQvp5VLBYnVGx6TuR7UwjKX6U93UexarLnXr8zVWZnaVb5fQ63n6yYj73XxALx`](https://explorer.solana.com/tx/4kTYGKXaWpK9ESi9tHu4rEWRegwQvp5VLBYnVGx6TuR7UwjKX6U93UexarLnXr8zVWZnaVb5fQ63n6yYj73XxALx?cluster=devnet)
+- **Ребалансировка — Шаг 1 (Закрытие старой позиции `[-360 .. 240]`)**: [`4jcQBHWTEmncxCggVvahguXgqxLk3JBnK9VszeGdKRY3ZXy1kd3jXibcpeZTUaknzuCucqCtKmfUvmw9jtnhnund`](https://explorer.solana.com/tx/4jcQBHWTEmncxCggVvahguXgqxLk3JBnK9VszeGdKRY3ZXy1kd3jXibcpeZTUaknzuCucqCtKmfUvmw9jtnhnund?cluster=devnet)
+- **Ребалансировка — Шаг 2 (Открытие новой позиции `[-420 .. 180]`)**: [`2qsFSaiK2TX2auzhhNm7FuAnNYMmxtPCFfuv5EQvbQ9BtQmqmufVy1xZuNgKw5t9RTRUkMsfG59dBRMHyBP31EkN`](https://explorer.solana.com/tx/2qsFSaiK2TX2auzhhNm7FuAnNYMmxtPCFfuv5EQvbQ9BtQmqmufVy1xZuNgKw5t9RTRUkMsfG59dBRMHyBP31EkN?cluster=devnet)
+
+---
+
+## 12. Исправления после ревью
+
+| Проблема | Исправление |
+|---|---|
+| Курс доли считался только по `token_vault`: после `swap` стратегии новый вкладчик получал лишние доли, а выводящий терял свою часть `secondary_vault` | `nav.rs`: NAV = `token_vault` + `secondary_vault` по цене пула. Адрес `Strategy` проверяется сидами, поэтому «забыть» передать стратегию нельзя |
+| При `vault_balance == 0` и `total_shares > 0` доли выпускались `1:1` и размывали старых вкладчиков | Ветка удалена, формула единая для всех случаев |
+| Атака первого вкладчика (депозит 1 микротокена + донат в `token_vault`) | Виртуальная доля `+1` в числителе и знаменателе (virtual offset, как в ERC-4626) |
+| У `withdraw` не было защиты от изменения курса | Аргумент `min_amount_out`, флаг CLI `--slippage-bps` (по умолчанию 50) |
+| Открытую CLMM-позицию нельзя честно оценить без тиковой математики | `deposit` и `withdraw` отклоняются с `PositionActive`, пока позиция не закрыта |
+
+Известное ограничение: стоимость `secondary_vault` берётся по спотовой цене пула, которую можно сдвинуть
+крупным свопом в той же транзакции. Для продакшена нужна TWAP-цена из `observation_state`.

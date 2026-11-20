@@ -1,4 +1,5 @@
 pub mod pool;
+pub mod position;
 pub mod raydium;
 pub mod rpc;
 pub mod strategy;
@@ -77,12 +78,14 @@ GLOBAL OPTIONS:
   --rpc-url <URL>               Custom RPC endpoint URL
   --keypair <PATH>              Wallet keypair path (default: ../.keys/id.json or ~/.config/solana/id.json)
   --mint <PUBKEY>               Base deposit token mint of the vault
+  --secondary-mint <PUBKEY>     Secondary token mint of the Raydium CLMM pool
+  --pool <PUBKEY>               Raydium CLMM PoolState address
 
 COMMANDS:
   Week 8 (Vault Skeleton & PDAs):
     init                        Initialize VaultState, token_vault, and share_mint PDAs
     card                        Create personal UserCard PDA for the wallet
-    show                        Show VaultState, UserCard, wallet balances
+    show                        Show VaultState, UserCard, wallet balances, and Strategy state
 
   Week 9 (Deposit & Share Tokens):
     deposit --amount <UI_AMT>   Deposit tokens into vault and mint proportional share tokens
@@ -90,6 +93,7 @@ COMMANDS:
   Week 10 (CPI & Withdraw):
     withdraw --shares <UI_AMT> [--slippage-bps 50]
                                 Burn share tokens and withdraw proportional underlying tokens
+                                (min_amount_out = expected * (1 - slippage))
 
   Week 11 (Raydium CLMM Pool & Initial Position):
     create-token [--decimals 6] [--supply 1000000]
@@ -105,7 +109,18 @@ COMMANDS:
     strategy --mint <MINT_A> --secondary-mint <MINT_B> --pool <POOL>
                                 Initialize vault Strategy PDA and secondary_vault PDA
     vault-swap --amount <UI_AMT> [--a-to-b | --b-to-a] [--slippage-bps 100] [--reject]
-                                Quote via simulation and swap vault tokens through Raydium CLMM CPI"
+                                Quote via simulation and swap vault tokens through Raydium CLMM CPI
+
+  Week 13 (Vault CLMM Position, Fees & Rebalancing):
+    vault-open-position [--tick-lower <T>] [--tick-upper <T>] [--amount-0 500] [--amount-1 500]
+                                Open vault's own concentrated liquidity position via CPI
+    trader-swap --pool <POOL> --amount <UI_AMT> [--zero-for-one | --one-for-zero]
+                                Swap from external trader wallet to generate fees / move pool price
+    vault-collect-fees          Collect accrued trading fees from vault's CLMM position via CPI
+    vault-close-position [--slippage-bps 100]
+                                Quote minimums via simulation, withdraw all liquidity, and close NFT
+    vault-rebalance [--tick-lower <T>] [--tick-upper <T>] [--amount-0 500] [--amount-1 500]
+                                Close out-of-range position and open a new one around current price"
     );
 }
 
@@ -244,18 +259,86 @@ fn main() -> Result<()> {
             let mint_a = resolve_deposit_mint()?;
             let amount = parse_flag_value(&args, "--amount")
                 .ok_or_else(|| anyhow!("Missing --amount <UI_AMOUNT> for vault-swap"))?;
-            let a_to_b = if has_flag(&args, "--b-to-a") {
-                false
-            } else {
-                true
-            };
+            let a_to_b = !has_flag(&args, "--b-to-a");
             let slippage_bps: u64 = parse_flag_value(&args, "--slippage-bps")
                 .unwrap_or_else(|| "100".to_string())
                 .parse()?;
             let reject = has_flag(&args, "--reject");
             strategy::cmd_vault_swap(&rpc, &wallet, &mint_a, &amount, a_to_b, slippage_bps, reject)?;
         }
-        cmd => bail!("Unknown command: {}. Run with --help for usage.", cmd),
+        "vault-open-position" => {
+            let mint_a = resolve_deposit_mint()?;
+            let tick_lower = match parse_flag_value(&args, "--tick-lower") {
+                Some(s) => Some(s.parse()?),
+                None => None,
+            };
+            let tick_upper = match parse_flag_value(&args, "--tick-upper") {
+                Some(s) => Some(s.parse()?),
+                None => None,
+            };
+            let amount_0 =
+                parse_flag_value(&args, "--amount-0").unwrap_or_else(|| "200".to_string());
+            let amount_1 =
+                parse_flag_value(&args, "--amount-1").unwrap_or_else(|| "200".to_string());
+            position::cmd_open_vault_position(
+                &rpc,
+                &wallet,
+                &mint_a,
+                tick_lower,
+                tick_upper,
+                &amount_0,
+                &amount_1,
+            )?;
+        }
+        "vault-collect-fees" => {
+            let mint_a = resolve_deposit_mint()?;
+            position::cmd_collect_vault_fees(&rpc, &wallet, &mint_a)?;
+        }
+        "vault-close-position" => {
+            let mint_a = resolve_deposit_mint()?;
+            let slippage_bps: u64 = parse_flag_value(&args, "--slippage-bps")
+                .unwrap_or_else(|| "100".to_string())
+                .parse()?;
+            position::cmd_close_vault_position(&rpc, &wallet, &mint_a, slippage_bps)?;
+        }
+        "vault-rebalance" => {
+            let mint_a = resolve_deposit_mint()?;
+            let tick_lower = match parse_flag_value(&args, "--tick-lower") {
+                Some(s) => Some(s.parse()?),
+                None => None,
+            };
+            let tick_upper = match parse_flag_value(&args, "--tick-upper") {
+                Some(s) => Some(s.parse()?),
+                None => None,
+            };
+            let amount_0 =
+                parse_flag_value(&args, "--amount-0").unwrap_or_else(|| "200".to_string());
+            let amount_1 =
+                parse_flag_value(&args, "--amount-1").unwrap_or_else(|| "200".to_string());
+            let slippage_bps: u64 = parse_flag_value(&args, "--slippage-bps")
+                .unwrap_or_else(|| "100".to_string())
+                .parse()?;
+            position::cmd_rebalance_vault_position(
+                &rpc,
+                &wallet,
+                &mint_a,
+                tick_lower,
+                tick_upper,
+                &amount_0,
+                &amount_1,
+                slippage_bps,
+            )?;
+        }
+        "trader-swap" => {
+            let pool_addr = resolve_pool()?;
+            let amount = parse_flag_value(&args, "--amount")
+                .ok_or_else(|| anyhow!("Missing --amount <UI_AMOUNT> for trader-swap"))?;
+            let zero_for_one = !has_flag(&args, "--one-for-zero");
+            position::cmd_trader_swap(&rpc, &wallet, &pool_addr, &amount, zero_for_one)?;
+        }
+        other => {
+            bail!("Unknown command '{}'. Run with --help for usage.", other);
+        }
     }
 
     Ok(())
