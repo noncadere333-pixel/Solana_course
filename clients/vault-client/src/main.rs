@@ -83,7 +83,11 @@ COMMANDS:
     show                        Show VaultState, UserCard, wallet balances
 
   Week 9 (Deposit & Share Tokens):
-    deposit --amount <UI_AMT>   Deposit tokens into vault and mint proportional share tokens"
+    deposit --amount <UI_AMT>   Deposit tokens into vault and mint proportional share tokens
+
+  Week 10 (CPI & Withdraw):
+    withdraw --shares <UI_AMT> [--slippage-bps 50]
+                                Burn share tokens and withdraw proportional underlying tokens"
     );
 }
 
@@ -149,6 +153,16 @@ fn main() -> Result<()> {
             let amount = parse_flag_value(&args, "--amount")
                 .ok_or_else(|| anyhow!("Missing --amount <UI_AMOUNT> for deposit"))?;
             vault::cmd_deposit(&rpc, &wallet, &mint, &amount)?;
+        }
+        "withdraw" => {
+            let mint = resolve_deposit_mint()?;
+            let shares = parse_flag_value(&args, "--shares")
+                .or_else(|| parse_flag_value(&args, "--amount"))
+                .ok_or_else(|| anyhow!("Missing --shares <UI_SHARES> for withdraw"))?;
+            let slippage_bps: u64 = parse_flag_value(&args, "--slippage-bps")
+                .unwrap_or_else(|| "50".to_string())
+                .parse()?;
+            vault::cmd_withdraw(&rpc, &wallet, &mint, &shares, slippage_bps)?;
         }
         cmd => bail!("Unknown command: {}. Run with --help for usage.", cmd),
     }

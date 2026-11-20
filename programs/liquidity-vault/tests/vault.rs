@@ -413,3 +413,238 @@ fn week9_deposit_share_calculation_and_zero_rejections() {
         dust_err
     );
 }
+
+#[test]
+fn week10_withdraw_cpi_yield_distribution_and_error_checks() {
+    let (mut svm, admin, deposit_mint, _) = setup_svm();
+    let (vault, token_vault, share_mint) = init_vault(&mut svm, &admin, &deposit_mint);
+
+    let user1 = Keypair::new();
+    let user2 = Keypair::new();
+    svm.airdrop(&user1.pubkey(), 5 * SOL).unwrap();
+    svm.airdrop(&user2.pubkey(), 5 * SOL).unwrap();
+    let u1_pk = Pubkey::new_from_array(user1.pubkey().to_bytes());
+    let u2_pk = Pubkey::new_from_array(user2.pubkey().to_bytes());
+
+    let card1 = create_card(&mut svm, &user1, &vault);
+    let card2 = create_card(&mut svm, &user2, &vault);
+
+    let u1_token = ata(&u1_pk, &deposit_mint);
+    let u2_token = ata(&u2_pk, &deposit_mint);
+    let u1_share = ata(&u1_pk, &share_mint);
+    let u2_share = ata(&u2_pk, &share_mint);
+
+    set_token_account(&mut svm, &u1_token, &deposit_mint, &u1_pk, 1_000 * ONE_TOKEN);
+    set_token_account(&mut svm, &u2_token, &deposit_mint, &u2_pk, 110 * ONE_TOKEN);
+
+    // 1. User 1 вносит 1000 токенов -> получает 1000 share-токенов
+    send_ix(
+        &mut svm,
+        &[&user1],
+        Instruction {
+            program_id: liquidity_vault::id(),
+            accounts: accounts::Deposit {
+                user: u1_pk,
+                vault,
+                user_card: card1,
+                deposit_mint,
+                share_mint,
+                user_token_account: u1_token,
+                token_vault,
+                user_share_account: u1_share,
+                token_program: token_program(),
+                associated_token_program: ata_program(),
+                system_program: system_program::ID,
+                strategy: pda(&[STRATEGY_SEED, vault.as_ref()]),
+                secondary_vault: pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]),
+                pool_state: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: instruction::Deposit {
+                amount: 1_000 * ONE_TOKEN,
+            }
+            .data(),
+        },
+    )
+    .unwrap();
+
+    // 2. Vault зарабатывает +100 токенов (в хранилище 1100 токенов)
+    set_token_account(
+        &mut svm,
+        &token_vault,
+        &deposit_mint,
+        &vault,
+        1_100 * ONE_TOKEN,
+    );
+
+    // 3. User 2 вносит 110 токенов -> получает 100 share-токенов
+    send_ix(
+        &mut svm,
+        &[&user2],
+        Instruction {
+            program_id: liquidity_vault::id(),
+            accounts: accounts::Deposit {
+                user: u2_pk,
+                vault,
+                user_card: card2,
+                deposit_mint,
+                share_mint,
+                user_token_account: u2_token,
+                token_vault,
+                user_share_account: u2_share,
+                token_program: token_program(),
+                associated_token_program: ata_program(),
+                system_program: system_program::ID,
+                strategy: pda(&[STRATEGY_SEED, vault.as_ref()]),
+                secondary_vault: pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]),
+                pool_state: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: instruction::Deposit {
+                amount: 110 * ONE_TOKEN,
+            }
+            .data(),
+        },
+    )
+    .unwrap();
+
+    // Попытка вывести больше долей, чем есть на балансе -> InsufficientShares
+    let excess_err = send_ix(
+        &mut svm,
+        &[&user2],
+        Instruction {
+            program_id: liquidity_vault::id(),
+            accounts: accounts::Withdraw {
+                user: u2_pk,
+                vault,
+                user_card: card2,
+                deposit_mint,
+                share_mint,
+                user_token_account: u2_token,
+                token_vault,
+                user_share_account: u2_share,
+                token_program: token_program(),
+                strategy: pda(&[STRATEGY_SEED, vault.as_ref()]),
+                secondary_vault: pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]),
+                pool_state: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: instruction::Withdraw {
+                shares: 200 * ONE_TOKEN,
+                min_amount_out: 0,
+            }
+            .data(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        excess_err.contains(&custom_err(VaultError::InsufficientShares)),
+        "got {}",
+        excess_err
+    );
+
+    // Слишком жёсткий min_amount_out (ровно 1100 токенов) -> SlippageExceeded
+    let slippage_err = send_ix(
+        &mut svm,
+        &[&user1],
+        Instruction {
+            program_id: liquidity_vault::id(),
+            accounts: accounts::Withdraw {
+                user: u1_pk,
+                vault,
+                user_card: card1,
+                deposit_mint,
+                share_mint,
+                user_token_account: u1_token,
+                token_vault,
+                user_share_account: u1_share,
+                token_program: token_program(),
+                strategy: pda(&[STRATEGY_SEED, vault.as_ref()]),
+                secondary_vault: pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]),
+                pool_state: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: instruction::Withdraw {
+                shares: 1_000 * ONE_TOKEN,
+                min_amount_out: 1_100 * ONE_TOKEN,
+            }
+            .data(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        slippage_err.contains(&custom_err(VaultError::SlippageExceeded)),
+        "got {}",
+        slippage_err
+    );
+
+    // 4. User 1 сжигает все 1000 share-токенов -> получает свой вклад + доход.
+    // Из-за виртуальной доли (защита от атаки первого вкладчика) выплата округляется
+    // вниз на 1 микротокен: 1000e6 * (1210e6 + 1) / (1100e6 + 1) = 1_099_999_999.
+    let user1_expected = 1_100 * ONE_TOKEN - 1;
+    send_ix(
+        &mut svm,
+        &[&user1],
+        Instruction {
+            program_id: liquidity_vault::id(),
+            accounts: accounts::Withdraw {
+                user: u1_pk,
+                vault,
+                user_card: card1,
+                deposit_mint,
+                share_mint,
+                user_token_account: u1_token,
+                token_vault,
+                user_share_account: u1_share,
+                token_program: token_program(),
+                strategy: pda(&[STRATEGY_SEED, vault.as_ref()]),
+                secondary_vault: pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]),
+                pool_state: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: instruction::Withdraw {
+                shares: 1_000 * ONE_TOKEN,
+                min_amount_out: user1_expected,
+            }
+            .data(),
+        },
+    )
+    .unwrap();
+    assert_eq!(read_token_amount(&svm, &u1_token), user1_expected);
+    assert_eq!(read_token_amount(&svm, &u1_share), 0);
+
+    // 5. User 2 сжигает свои 100 share-токенов -> получает ровно 110 базовых токенов
+    send_ix(
+        &mut svm,
+        &[&user2],
+        Instruction {
+            program_id: liquidity_vault::id(),
+            accounts: accounts::Withdraw {
+                user: u2_pk,
+                vault,
+                user_card: card2,
+                deposit_mint,
+                share_mint,
+                user_token_account: u2_token,
+                token_vault,
+                user_share_account: u2_share,
+                token_program: token_program(),
+                strategy: pda(&[STRATEGY_SEED, vault.as_ref()]),
+                secondary_vault: pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]),
+                pool_state: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: instruction::Withdraw {
+                shares: 100 * ONE_TOKEN,
+                min_amount_out: 0,
+            }
+            .data(),
+        },
+    )
+    .unwrap();
+    assert_eq!(read_token_amount(&svm, &u2_token), 110 * ONE_TOKEN);
+    assert_eq!(read_token_amount(&svm, &u2_share), 0);
+    // 1 микротокен округления остаётся в хранилище (в пользу пула).
+    assert_eq!(read_token_amount(&svm, &token_vault), 1);
+    assert_eq!(read_mint_supply(&svm, &share_mint), 0);
+}
