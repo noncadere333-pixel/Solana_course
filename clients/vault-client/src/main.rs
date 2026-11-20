@@ -1,3 +1,4 @@
+pub mod pool;
 pub mod raydium;
 pub mod rpc;
 pub mod vault;
@@ -87,7 +88,17 @@ COMMANDS:
 
   Week 10 (CPI & Withdraw):
     withdraw --shares <UI_AMT> [--slippage-bps 50]
-                                Burn share tokens and withdraw proportional underlying tokens"
+                                Burn share tokens and withdraw proportional underlying tokens
+
+  Week 11 (Raydium CLMM Pool & Initial Position):
+    create-token [--decimals 6] [--supply 1000000]
+                                Create a test SPL token and mint initial supply to wallet
+    create-pool --mint <MINT_A> --secondary-mint <MINT_B> [--price 1.0]
+                                Create a Raydium CLMM pool in Devnet
+    open-position --pool <POOL> [--tick-lower -600] [--tick-upper 600] [--amount-0 10000] [--amount-1 10000]
+                                Open a wallet LP position around current price via Token-2022 NFT
+    pool --pool <POOL> [--position <PERSONAL_POS>]
+                                Inspect Raydium CLMM PoolState and optional PersonalPositionState"
     );
 }
 
@@ -163,6 +174,58 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| "50".to_string())
                 .parse()?;
             vault::cmd_withdraw(&rpc, &wallet, &mint, &shares, slippage_bps)?;
+        }
+        "create-token" => {
+            let decimals: u8 = parse_flag_value(&args, "--decimals")
+                .unwrap_or_else(|| "6".to_string())
+                .parse()?;
+            let supply =
+                parse_flag_value(&args, "--supply").unwrap_or_else(|| "1000000".to_string());
+            pool::cmd_create_token(&rpc, &wallet, decimals, &supply)?;
+        }
+        "create-pool" => {
+            let mint_a = resolve_deposit_mint()?;
+            let mint_b = resolve_secondary_mint()?;
+            let price: f64 = parse_flag_value(&args, "--price")
+                .unwrap_or_else(|| "1.0".to_string())
+                .parse()?;
+            let amm_config = match parse_flag_value(&args, "--amm-config") {
+                Some(s) => Some(Pubkey::from_str(&s)?),
+                None => None,
+            };
+            pool::cmd_create_pool(&rpc, &wallet, &mint_a, &mint_b, amm_config, price)?;
+        }
+        "open-position" => {
+            let pool_addr = resolve_pool()?;
+            let tick_lower = match parse_flag_value(&args, "--tick-lower") {
+                Some(s) => Some(s.parse()?),
+                None => None,
+            };
+            let tick_upper = match parse_flag_value(&args, "--tick-upper") {
+                Some(s) => Some(s.parse()?),
+                None => None,
+            };
+            let amount_0 =
+                parse_flag_value(&args, "--amount-0").unwrap_or_else(|| "50000".to_string());
+            let amount_1 =
+                parse_flag_value(&args, "--amount-1").unwrap_or_else(|| "50000".to_string());
+            pool::cmd_open_wallet_position(
+                &rpc,
+                &wallet,
+                &pool_addr,
+                tick_lower,
+                tick_upper,
+                &amount_0,
+                &amount_1,
+            )?;
+        }
+        "pool" => {
+            let pool_addr = resolve_pool()?;
+            let pos_addr = match parse_flag_value(&args, "--position") {
+                Some(s) => Some(Pubkey::from_str(&s)?),
+                None => None,
+            };
+            pool::cmd_show_pool(&rpc, &pool_addr, pos_addr.as_ref())?;
         }
         cmd => bail!("Unknown command: {}. Run with --help for usage.", cmd),
     }

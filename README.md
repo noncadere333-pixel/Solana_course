@@ -228,3 +228,20 @@ flowchart TD
 
 ---
 
+## 7. Неделя 11 — Пул Raydium CLMM и открытие позиции в диапазоне тиков
+
+### Обоснование начальной цены и тикового диапазона
+- Оба тестовых токена (`wKGeYnbJWf2iqakmqFkYGcnmWHQ2roJ6jJ1664Zf2oR` и `EWXdK61y5MT8HfZypYJBLNj2A2paRAc5pXojcpeFkRwu`) имеют `decimals = 6`.
+- Начальная цена выбрана равной **$P = 1.0$** (`1.0 token_1` за `1.0 token_0`), что соответствует:
+  $$\text{sqrt\_price\_x64} = 1 \times 2^{64} = 18\,446\,744\,073\,709\,551\,616, \quad \text{tick\_current} = 0$$
+- Использован `AmmConfig` `B9H7TR8PSjJT7nuW2tuPkFC63z7drtMZ4LoCtD7PrCN1` с шагом сетки `tick_spacing = 60` (комиссия пула 0.25%).
+- Первичная позиция провайдера ликвидности открыта в симметричном диапазоне **`[-600, 600]`** ($\pm 10 \times \text{tick\_spacing}$, или примерно $\pm 6.18\%$ вокруг цены $1.0$). Такой диапазон полностью помещается внутри центрального `TickArray` и обеспечивает достаточную глубину ликвидности ($L = 1\,658\,037\,490\,677$) для свопов стратегии хранилища.
+
+### Транзакции Недели 11 в Solana Devnet
+- **Выпуск `deposit_mint` (`token_mint_0`)**: [`xPsfmTckoHNbthKxcwtgRfW45CpM7zyBMZz9arToFPqETaXDcufi8NEcbiyEX27PwQpN2GDpFy1PMxeDsPjCHKa`](https://explorer.solana.com/tx/xPsfmTckoHNbthKxcwtgRfW45CpM7zyBMZz9arToFPqETaXDcufi8NEcbiyEX27PwQpN2GDpFy1PMxeDsPjCHKa?cluster=devnet)
+- **Выпуск `secondary_mint` (`token_mint_1`)**: [`32biTkjtKowbN1nHpFmpnpkTce4FVSF3avJfVJvPP39PQhkJsyBJYe9ubYZ65ExPNXwVucT85FkJwVrG1ayA7sFL`](https://explorer.solana.com/tx/32biTkjtKowbN1nHpFmpnpkTce4FVSF3avJfVJvPP39PQhkJsyBJYe9ubYZ65ExPNXwVucT85FkJwVrG1ayA7sFL?cluster=devnet)
+- **Создание пула Raydium CLMM (`create_pool`)**: [`3g8JzcHJev6jnXXYCpEczfvanSYVSMDF4oAnofUFhxCYFn5k87E4N1zYpuqPzh6ydGusrKQzzhHW96mqJTR672p3`](https://explorer.solana.com/tx/3g8JzcHJev6jnXXYCpEczfvanSYVSMDF4oAnofUFhxCYFn5k87E4N1zYpuqPzh6ydGusrKQzzhHW96mqJTR672p3?cluster=devnet)
+- **Открытие CLMM-позиции кошелька в диапазоне `[-600 .. 600]`**: [`4Hue8jjso8ULKkxziEchiiEQYXGxNWbs6MFWbkhCaFtpjmgPRStJwLzF5bTamMp24iAvmTREZ5W8qFaEd4x1k58F`](https://explorer.solana.com/tx/4Hue8jjso8ULKkxziEchiiEQYXGxNWbs6MFWbkhCaFtpjmgPRStJwLzF5bTamMp24iAvmTREZ5W8qFaEd4x1k58F?cluster=devnet)
+
+---
+
