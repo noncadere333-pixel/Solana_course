@@ -245,3 +245,20 @@ flowchart TD
 
 ---
 
+## 8. Неделя 12 — Стратегия и Swap хранилища через CPI в Raydium CLMM
+
+### Механизм котировки и защиты от проскальзывания (`SlippageExceeded`)
+1. Инструкция `init_strategy` создаёт PDA `Strategy` (`seeds = [b"strategy", vault.key().as_ref()]`) и второе хранилище `secondary_vault` (`seeds = [b"strategy_vault", vault.key().as_ref()]`), проверяя в `PoolState`, что пул действительно состоит из пары `(deposit_mint, secondary_mint)`.
+2. Перед отправкой `swap` Rust-клиент выполняет RPC-симуляцию (`simulateTransaction`) с возвратом послесимуляционного состояния выходного хранилища, вычисляя точный ожидаемый выход `quoted_out`.
+3. В инструкцию `swap` передаётся порог `min_amount_out = quoted_out * (10000 - slippage_bps) / 10000`. Программа вызывает `swap_v2` в Raydium CLMM с подписью `VaultState` PDA и передаёт этот же порог как `other_amount_threshold`.
+   - Первой срабатывает проверка самого Raydium: `TooLittleOutputReceived` (`Custom(6022)` — код ошибки программы Raydium CLMM, а не `liquidity_vault`).
+   - Вторая линия защиты — программа хранилища: после CPI она сверяет фактический прирост выходного хранилища и при `received < min_amount_out` возвращает `VaultError::SlippageExceeded` (`Custom(6013)`).
+
+### Транзакции Недели 12 в Solana Devnet
+- **Инициализация стратегии (`init_strategy`)**: [`GFBL41QtNTT3F1oCeVexwNohtB6gra3Z4eUbbRP9VgTL9faFL5LZFMqAMAySNg9spyPBtjUYuuBKCxC8VVHtftj`](https://explorer.solana.com/tx/GFBL41QtNTT3F1oCeVexwNohtB6gra3Z4eUbbRP9VgTL9faFL5LZFMqAMAySNg9spyPBtjUYuuBKCxC8VVHtftj?cluster=devnet)
+- **Успешный CPI Swap (`300.0` Deposit Mint → `299.195999` Secondary Mint)**: [`2nSvsvwMxqeGzwQvmVUHzxjUDvG5oRaWCMYAxMztxCR2T6wkTdvbutjrgG9jzKvt1Esx1nhyMdZj9AZAPwjDhPKW`](https://explorer.solana.com/tx/2nSvsvwMxqeGzwQvmVUHzxjUDvG5oRaWCMYAxMztxCR2T6wkTdvbutjrgG9jzKvt1Esx1nhyMdZj9AZAPwjDhPKW?cluster=devnet)
+  - Сдвиг цены в пуле: `tick_current: 0 → -4`, цена `1.000000 → 0.999639`
+- **Отклонённая ончейн-транзакция по защите от проскальзывания (`Custom(6022) = TooLittleOutputReceived` в Raydium CLMM)**: [`3iWWxz1PiuLi8aifVdvyEEpvH9w5hvoxUZ7YGzgdXjxuvr6vxkFN42pqWmntzcAVrVqQx8rJGACwJyPgfEWvuzn1`](https://explorer.solana.com/tx/3iWWxz1PiuLi8aifVdvyEEpvH9w5hvoxUZ7YGzgdXjxuvr6vxkFN42pqWmntzcAVrVqQx8rJGACwJyPgfEWvuzn1?cluster=devnet)
+
+---
+

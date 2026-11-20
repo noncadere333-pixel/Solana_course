@@ -36,3 +36,24 @@ pub struct UserCard {
     pub bump: u8,
 }
 
+/// Стратегия привязки к пулу Raydium CLMM (Неделя 12).
+/// PDA: `["strategy", vault]`.
+#[account]
+#[derive(InitSpace)]
+pub struct Strategy {
+    pub vault: Pubkey,
+    pub clmm_program: Pubkey,
+    pub pool_state: Pubkey,
+    pub amm_config: Pubkey,
+    pub secondary_mint: Pubkey,
+    pub secondary_vault: Pubkey,
+    pub position_nft_mint: Pubkey,
+    pub position_nft_account: Pubkey,
+    pub personal_position: Pubkey,
+    pub tick_lower_index: i32,
+    pub tick_upper_index: i32,
+    pub liquidity: u128,
+    pub active_position: bool,
+    pub bump: u8,
+    pub secondary_vault_bump: u8,
+}

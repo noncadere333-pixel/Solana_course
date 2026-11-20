@@ -648,3 +648,283 @@ fn week10_withdraw_cpi_yield_distribution_and_error_checks() {
     assert_eq!(read_token_amount(&svm, &token_vault), 1);
     assert_eq!(read_mint_supply(&svm, &share_mint), 0);
 }
+
+#[test]
+fn week12_and_week13_strategy_swap_and_position_guards() {
+    let (mut svm, admin, deposit_mint, secondary_mint) = setup_svm();
+    let admin_pk = Pubkey::new_from_array(admin.pubkey().to_bytes());
+    let (vault, token_vault, _) = init_vault(&mut svm, &admin, &deposit_mint);
+
+    let clmm_program = mock_clmm_program();
+    let so_path = format!(
+        "{}/../../target/deploy/liquidity_vault.so",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let program_bytes = std::fs::read(&so_path).unwrap();
+    svm.add_program(clmm_program.to_bytes(), &program_bytes)
+        .unwrap();
+
+    let amm_config = Pubkey::new_unique();
+    let pool_state = Pubkey::new_unique();
+    let pool_vault_0 = Pubkey::new_unique();
+    let pool_vault_1 = Pubkey::new_unique();
+    let observation = Pubkey::new_unique();
+
+    svm.set_account(
+        pool_state.to_bytes().into(),
+        Account {
+            lamports: 10 * SOL,
+            data: mock_pool_state_bytes(
+                &amm_config,
+                &deposit_mint,
+                &secondary_mint,
+                &pool_vault_0,
+                &pool_vault_1,
+                &observation,
+            ),
+            owner: clmm_program.to_bytes().into(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+
+    let strategy = pda(&[STRATEGY_SEED, vault.as_ref()]);
+    let secondary_vault = pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]);
+
+    // Посторонний пользователь не может инициализировать стратегию
+    let attacker = Keypair::new();
+    svm.airdrop(&attacker.pubkey(), 5 * SOL).unwrap();
+    let attacker_pk = Pubkey::new_from_array(attacker.pubkey().to_bytes());
+    let bad_init_err = send_ix(
+        &mut svm,
+        &[&attacker],
+        Instruction {
+            program_id: liquidity_vault::id(),
+            accounts: accounts::InitStrategy {
+                admin: attacker_pk,
+                vault,
+                strategy,
+                secondary_mint,
+                secondary_vault,
+                clmm_program,
+                amm_config,
+                pool_state,
+                token_program: token_program(),
+                system_program: system_program::ID,
+                rent: rent_sysvar(),
+            }
+            .to_account_metas(None),
+            data: instruction::InitStrategy {}.data(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        bad_init_err.contains(&custom_err(VaultError::Unauthorized)),
+        "got {}",
+        bad_init_err
+    );
+
+    // Администратор успешно инициализирует стратегию и второе хранилище
+    send_ix(
+        &mut svm,
+        &[&admin],
+        Instruction {
+            program_id: liquidity_vault::id(),
+            accounts: accounts::InitStrategy {
+                admin: admin_pk,
+                vault,
+                strategy,
+                secondary_mint,
+                secondary_vault,
+                clmm_program,
+                amm_config,
+                pool_state,
+                token_program: token_program(),
+                system_program: system_program::ID,
+                rent: rent_sysvar(),
+            }
+            .to_account_metas(None),
+            data: instruction::InitStrategy {}.data(),
+        },
+    )
+    .unwrap();
+
+    let strat_acc = svm.get_account(&strategy.to_bytes().into()).unwrap();
+    let mut slice: &[u8] = &strat_acc.data;
+    let parsed_strat = Strategy::try_deserialize(&mut slice).unwrap();
+    assert_eq!(parsed_strat.vault, vault);
+    assert_eq!(parsed_strat.pool_state, pool_state);
+    assert_eq!(parsed_strat.secondary_mint, secondary_mint);
+    assert_eq!(parsed_strat.secondary_vault, secondary_vault);
+    assert!(!parsed_strat.active_position);
+
+    // Проверка защит swap: отказ не-админу и отказ при подмене хранилищ пула
+    set_token_account(
+        &mut svm,
+        &token_vault,
+        &deposit_mint,
+        &vault,
+        500 * ONE_TOKEN,
+    );
+    let wrong_vault_err = send_ix(
+        &mut svm,
+        &[&admin],
+        Instruction {
+            program_id: liquidity_vault::id(),
+            accounts: accounts::SwapVault {
+                admin: admin_pk,
+                vault,
+                strategy,
+                token_vault,
+                secondary_vault,
+                deposit_mint,
+                secondary_mint,
+                clmm_program,
+                amm_config,
+                pool_state,
+                input_vault: pool_vault_1, // намеренно перепутаны хранилища пула
+                output_vault: pool_vault_0,
+                observation_state: observation,
+                token_program: token_program(),
+                token_program_2022: token_2022_program(),
+                memo_program: memo_program(),
+            }
+            .to_account_metas(None),
+            data: instruction::Swap {
+                amount_in: 100 * ONE_TOKEN,
+                min_amount_out: 95 * ONE_TOKEN,
+                sqrt_price_limit_x64: 0,
+                a_to_b: true,
+            }
+            .data(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        wrong_vault_err.contains(&custom_err(VaultError::InvalidPoolVaults)),
+        "got {}",
+        wrong_vault_err
+    );
+
+    // Проверка защит позиции (Неделя 13): неверный диапазон тиков и вызов collect_fees без открытой позиции
+    let nft_mint = Keypair::new();
+    let nft_mint_pk = Pubkey::new_from_array(nft_mint.pubkey().to_bytes());
+    let bad_range_err = send_ix(
+        &mut svm,
+        &[&admin, &nft_mint],
+        Instruction {
+            program_id: liquidity_vault::id(),
+            accounts: accounts::OpenVaultPosition {
+                admin: admin_pk,
+                vault,
+                strategy,
+                position_nft_mint: nft_mint_pk,
+                position_nft_account: Pubkey::new_unique(),
+                pool_state,
+                protocol_position: Pubkey::new_unique(),
+                tick_array_lower: Pubkey::new_unique(),
+                tick_array_upper: Pubkey::new_unique(),
+                personal_position: Pubkey::new_unique(),
+                token_vault,
+                secondary_vault,
+                pool_vault_0,
+                pool_vault_1,
+                deposit_mint,
+                secondary_mint,
+                clmm_program,
+                rent: rent_sysvar(),
+                system_program: system_program::ID,
+                token_program: token_program(),
+                associated_token_program: ata_program(),
+                token_program_2022: token_2022_program(),
+            }
+            .to_account_metas(None),
+            data: instruction::OpenPosition {
+                tick_lower_index: 600,
+                tick_upper_index: -600, // lower >= upper
+                tick_array_lower_start_index: 0,
+                tick_array_upper_start_index: -3600,
+                liquidity: 10_000,
+                amount_0_max: 100 * ONE_TOKEN,
+                amount_1_max: 100 * ONE_TOKEN,
+            }
+            .data(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        bad_range_err.contains(&custom_err(VaultError::InvalidTickRange)),
+        "got {}",
+        bad_range_err
+    );
+
+    let no_pos_err = send_ix(
+        &mut svm,
+        &[&admin],
+        Instruction {
+            program_id: liquidity_vault::id(),
+            accounts: accounts::CollectVaultFees {
+                admin: admin_pk,
+                vault,
+                strategy,
+                position_nft_account: Pubkey::new_unique(),
+                personal_position: Pubkey::new_unique(),
+                pool_state,
+                protocol_position: Pubkey::new_unique(),
+                pool_vault_0,
+                pool_vault_1,
+                tick_array_lower: Pubkey::new_unique(),
+                tick_array_upper: Pubkey::new_unique(),
+                token_vault,
+                secondary_vault,
+                deposit_mint,
+                secondary_mint,
+                clmm_program,
+                token_program: token_program(),
+                token_program_2022: token_2022_program(),
+                memo_program: memo_program(),
+            }
+            .to_account_metas(None),
+            data: instruction::CollectFees {}.data(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        no_pos_err.contains(&custom_err(VaultError::NoActivePosition)),
+        "got {}",
+        no_pos_err
+    );
+}
+
+fn deposit_ix(
+    user: &Pubkey,
+    vault: &Pubkey,
+    deposit_mint: &Pubkey,
+    share_mint: &Pubkey,
+    token_vault: &Pubkey,
+    pool_state: &Pubkey,
+    amount: u64,
+) -> Instruction {
+    Instruction {
+        program_id: liquidity_vault::id(),
+        accounts: accounts::Deposit {
+            user: *user,
+            vault: *vault,
+            user_card: pda(&[USER_CARD_SEED, vault.as_ref(), user.as_ref()]),
+            deposit_mint: *deposit_mint,
+            share_mint: *share_mint,
+            user_token_account: ata(user, deposit_mint),
+            token_vault: *token_vault,
+            user_share_account: ata(user, share_mint),
+            token_program: token_program(),
+            associated_token_program: ata_program(),
+            system_program: system_program::ID,
+            strategy: pda(&[STRATEGY_SEED, vault.as_ref()]),
+            secondary_vault: pda(&[STRATEGY_VAULT_SEED, vault.as_ref()]),
+            pool_state: *pool_state,
+        }
+        .to_account_metas(None),
+        data: instruction::Deposit { amount }.data(),
+    }
+}

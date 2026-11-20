@@ -207,6 +207,83 @@ impl RpcClient {
         })
     }
 
+    pub fn simulate_transaction(&self, tx: &Transaction) -> Result<SimulationOutput> {
+        self.simulate_with_accounts(tx, &[])
+    }
+
+    /// Симуляция транзакции с опциональным чтением состояния аккаунтов после исполнения (для котировок).
+    pub fn simulate_with_accounts(
+        &self,
+        tx: &Transaction,
+        inspect_keys: &[Pubkey],
+    ) -> Result<SimulationOutput> {
+        let raw_tx = bincode::serialize(tx)?;
+        let tx_b64 = BASE64.encode(raw_tx);
+
+        let mut cfg = json!({
+            "encoding": "base64",
+            "sigVerify": false,
+            "replaceRecentBlockhash": true,
+            "commitment": "confirmed"
+        });
+
+        if !inspect_keys.is_empty() {
+            let addresses: Vec<String> = inspect_keys.iter().map(|k| k.to_string()).collect();
+            cfg.as_object_mut().unwrap().insert(
+                "accounts".to_string(),
+                json!({
+                    "encoding": "base64",
+                    "addresses": addresses
+                }),
+            );
+        }
+
+        let res = self.call("simulateTransaction", json!([tx_b64, cfg]))?;
+        let val = res
+            .get("value")
+            .ok_or_else(|| anyhow!("Malformed simulateTransaction response"))?;
+
+        let err = val.get("err").and_then(|e| {
+            if e.is_null() {
+                None
+            } else {
+                Some(e.clone())
+            }
+        });
+        let logs = val
+            .get("logs")
+            .and_then(|l| l.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let units_consumed = val
+            .get("unitsConsumed")
+            .and_then(|u| u.as_u64())
+            .unwrap_or(0);
+
+        let mut accounts = Vec::new();
+        if let Some(acc_arr) = val.get("accounts").and_then(|a| a.as_array()) {
+            for item in acc_arr {
+                if item.is_null() {
+                    accounts.push(None);
+                } else {
+                    accounts.push(Some(Self::decode_rpc_account(item)?));
+                }
+            }
+        }
+
+        Ok(SimulationOutput {
+            err,
+            logs,
+            units_consumed,
+            accounts,
+        })
+    }
+
+    /// Отправка транзакции и ожидание подтверждения (`skip_preflight = true` используется для записи отклонённого swap в блокчейн).
     pub fn send_and_confirm(
         &self,
         tx: &Transaction,

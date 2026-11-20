@@ -6,9 +6,9 @@ use anchor_lang::{
 use anyhow::{anyhow, bail, Result};
 use liquidity_vault::{
     accounts, instruction,
-    math::{calculate_shares_to_mint, calculate_tokens_to_withdraw},
+    math::{calculate_shares_to_mint, calculate_tokens_to_withdraw, secondary_value_in_deposit},
     state::{
-        UserCard, VaultState, SHARE_MINT_SEED,
+        Strategy, UserCard, VaultState, SHARE_MINT_SEED, STRATEGY_SEED, STRATEGY_VAULT_SEED,
         USER_CARD_SEED, VAULT_SEED, VAULT_TOKEN_SEED,
     },
 };
@@ -18,7 +18,7 @@ use solana_signer::Signer;
 use solana_transaction::Transaction;
 
 use crate::{
-    raydium::{ata_program_id, rent_sysvar_id, token_program_id},
+    raydium::{ata_program_id, fetch_pool_state, rent_sysvar_id, token_program_id},
     rpc::RpcClient,
 };
 
@@ -427,11 +427,7 @@ pub fn cmd_show_vault(rpc: &RpcClient, user: &Keypair, deposit_mint: &Pubkey) ->
         println!("  UserCard PDA     : {} (not created yet)", user_card_pda);
     }
 
-    /* strategy */
-    Ok(())
-}
-
-// 
+    let (strategy_pda, _) = derive_strategy_pda(&vault_pda);
     if let Some(strat) = fetch_strategy(rpc, &strategy_pda)? {
         let (_, sec_decimals) = read_mint_supply_and_decimals(rpc, &strat.secondary_mint)?;
         let sec_bal = read_token_balance(rpc, &strat.secondary_vault)?;

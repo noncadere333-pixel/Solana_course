@@ -1,6 +1,7 @@
 pub mod pool;
 pub mod raydium;
 pub mod rpc;
+pub mod strategy;
 pub mod vault;
 
 use std::{env, fs, path::PathBuf, str::FromStr};
@@ -98,7 +99,13 @@ COMMANDS:
     open-position --pool <POOL> [--tick-lower -600] [--tick-upper 600] [--amount-0 10000] [--amount-1 10000]
                                 Open a wallet LP position around current price via Token-2022 NFT
     pool --pool <POOL> [--position <PERSONAL_POS>]
-                                Inspect Raydium CLMM PoolState and optional PersonalPositionState"
+                                Inspect Raydium CLMM PoolState and optional PersonalPositionState
+
+  Week 12 (Vault Strategy & Swap via CPI):
+    strategy --mint <MINT_A> --secondary-mint <MINT_B> --pool <POOL>
+                                Initialize vault Strategy PDA and secondary_vault PDA
+    vault-swap --amount <UI_AMT> [--a-to-b | --b-to-a] [--slippage-bps 100] [--reject]
+                                Quote via simulation and swap vault tokens through Raydium CLMM CPI"
     );
 }
 
@@ -226,6 +233,27 @@ fn main() -> Result<()> {
                 None => None,
             };
             pool::cmd_show_pool(&rpc, &pool_addr, pos_addr.as_ref())?;
+        }
+        "strategy" => {
+            let mint_a = resolve_deposit_mint()?;
+            let mint_b = resolve_secondary_mint()?;
+            let pool_addr = resolve_pool()?;
+            strategy::cmd_init_strategy(&rpc, &wallet, &mint_a, &mint_b, &pool_addr)?;
+        }
+        "vault-swap" => {
+            let mint_a = resolve_deposit_mint()?;
+            let amount = parse_flag_value(&args, "--amount")
+                .ok_or_else(|| anyhow!("Missing --amount <UI_AMOUNT> for vault-swap"))?;
+            let a_to_b = if has_flag(&args, "--b-to-a") {
+                false
+            } else {
+                true
+            };
+            let slippage_bps: u64 = parse_flag_value(&args, "--slippage-bps")
+                .unwrap_or_else(|| "100".to_string())
+                .parse()?;
+            let reject = has_flag(&args, "--reject");
+            strategy::cmd_vault_swap(&rpc, &wallet, &mint_a, &amount, a_to_b, slippage_bps, reject)?;
         }
         cmd => bail!("Unknown command: {}. Run with --help for usage.", cmd),
     }
